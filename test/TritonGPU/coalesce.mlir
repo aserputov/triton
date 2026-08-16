@@ -299,6 +299,41 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 
 // -----
 
+#thread_local = #ttg.blocked<{sizePerThread = [1, 1, 1], threadsPerWarp = [1, 1, 32], warpsPerCTA = [1, 1, 4], order = [2, 1, 0]}>
+#reduced = #ttg.slice<{dim = 1, parent = #thread_local}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:90", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-DAG: #[[$THREAD_LOCAL:.*]] = #ttg.blocked<{sizePerThread = [1, 1, 1], threadsPerWarp = [1, 1, 32], warpsPerCTA = [1, 1, 4], order = [2, 1, 0]}>
+  // CHECK-DAG: #[[$VECTORIZED:.*]] = #ttg.blocked<{sizePerThread = [1, 1, 8], threadsPerWarp = [1, 2, 16], warpsPerCTA = [1, 4, 1], order = [2, 1, 0]}>
+
+  // CHECK-LABEL: @descriptor_load_partial_reduce
+  // CHECK: %[[LOAD:.*]] = tt.descriptor_load {{.*}} -> tensor<1x32x128xbf16, #[[$THREAD_LOCAL]]>
+  // CHECK-NEXT: %[[EXT:.*]] = arith.extf %[[LOAD]]
+  // CHECK-NEXT: %{{.*}} = "tt.reduce"(%[[EXT]]) <{axis = 1 : i32}>
+  tt.func public @descriptor_load_partial_reduce(%arg0: !tt.tensordesc<1x32x128xbf16>) {
+    %c0 = arith.constant 0 : i32
+    %load = tt.descriptor_load %arg0[%c0, %c0, %c0] : !tt.tensordesc<1x32x128xbf16> -> tensor<1x32x128xbf16, #thread_local>
+    %ext = arith.extf %load : tensor<1x32x128xbf16, #thread_local> to tensor<1x32x128xf32, #thread_local>
+    %max = "tt.reduce"(%ext) <{axis = 1 : i32}> ({
+    ^bb0(%lhs: f32, %rhs: f32):
+      %result = arith.maximumf %lhs, %rhs : f32
+      tt.reduce.return %result : f32
+    }) : (tensor<1x32x128xf32, #thread_local>) -> tensor<1x128xf32, #reduced>
+    tt.return
+  }
+
+  // A descriptor load without a partial-reduction consumer still uses the
+  // vectorized layout selected by Coalesce.
+  // CHECK-LABEL: @descriptor_load_without_reduce
+  // CHECK: tt.descriptor_load {{.*}} -> tensor<1x32x128xbf16, #[[$VECTORIZED]]>
+  tt.func public @descriptor_load_without_reduce(%arg0: !tt.tensordesc<1x32x128xbf16>) {
+    %c0 = arith.constant 0 : i32
+    %load = tt.descriptor_load %arg0[%c0, %c0, %c0] : !tt.tensordesc<1x32x128xbf16> -> tensor<1x32x128xbf16, #thread_local>
+    tt.return
+  }
+}
+
+// -----
+
 // CHECK: #[[$LAYOUT:.*]] = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
 #blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:100", "ttg.threads-per-warp" = 32 : i32} {

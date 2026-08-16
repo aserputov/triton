@@ -1,7 +1,9 @@
 #include <iterator>
 #include <numeric>
+#include <optional>
 
 #include "mlir/Analysis/SliceAnalysis.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Support/LLVM.h"
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
@@ -50,16 +52,75 @@ static Attribute pickDescriptorLoadStoreLayout(int numWarps, int threadsPerWarp,
   return layout;
 }
 
+// Follow a conservative single-use, shape-preserving elementwise chain from a
+// descriptor load to a partial reduction. More complicated DAGs are left to a
+// future cost model.
+static std::optional<unsigned>
+findPartialReductionAxis(Operation *descriptorLoad) {
+  if (descriptorLoad->getNumResults() != 1)
+    return std::nullopt;
+
+  Value value = descriptorLoad->getResult(0);
+  while (value.hasOneUse()) {
+    Operation *user = *value.getUsers().begin();
+    if (auto reduce = dyn_cast<triton::ReduceOp>(user)) {
+      if (reduce->getNumResults() == 0 ||
+          !isa<RankedTensorType>(reduce->getResult(0).getType()))
+        return std::nullopt;
+      return reduce.getAxis();
+    }
+
+    if (!user->hasTrait<OpTrait::Elementwise>() || !isMemoryEffectFree(user) ||
+        user->getNumResults() != 1)
+      return std::nullopt;
+
+    auto inputType = dyn_cast<RankedTensorType>(value.getType());
+    auto resultType = dyn_cast<RankedTensorType>(user->getResult(0).getType());
+    if (!inputType || !resultType ||
+        inputType.getShape() != resultType.getShape())
+      return std::nullopt;
+    value = user->getResult(0);
+  }
+  return std::nullopt;
+}
+
+static bool introducesCrossWarpReduction(Operation *descriptorLoad,
+                                         Attribute candidateLayout) {
+  std::optional<unsigned> reductionAxis =
+      findPartialReductionAxis(descriptorLoad);
+  if (!reductionAxis)
+    return false;
+
+  auto resultType =
+      cast<RankedTensorType>(descriptorLoad->getResult(0).getType());
+  auto currentLayout = dyn_cast<BlockedEncodingAttr>(resultType.getEncoding());
+  auto candidate = dyn_cast<BlockedEncodingAttr>(candidateLayout);
+  if (!currentLayout || !candidate ||
+      *reductionAxis >= static_cast<unsigned>(resultType.getRank()))
+    return false;
+
+  unsigned axis = *reductionAxis;
+  bool currentIsThreadLocal =
+      currentLayout.getThreadsPerWarp()[axis] == 1 &&
+      currentLayout.getWarpsPerCTA()[axis] == 1 &&
+      currentLayout.getCGALayout().getCTAsPerCGA()[axis] == 1;
+  return currentIsThreadLocal && candidate.getWarpsPerCTA()[axis] > 1;
+}
+
 static void pickDescriptorLoadStoreLayout(
     ModuleOp moduleOp, llvm::MapVector<Operation *, Attribute> &layoutMap) {
   int threadsPerWarp = TritonGPUDialect::getThreadsPerWarp(moduleOp);
   moduleOp.walk([&](Operation *op) {
     int numWarps = lookupNumWarps(op);
     if (auto load = dyn_cast<DescriptorOpInterface>(op)) {
-      if (load->getNumResults() == 1)
-        layoutMap[op] = pickDescriptorLoadStoreLayout(
-            numWarps, threadsPerWarp,
-            cast<RankedTensorType>(load->getResult(0).getType()));
+      if (load->getNumResults() == 1) {
+        auto resultType = cast<RankedTensorType>(load->getResult(0).getType());
+        Attribute layout =
+            pickDescriptorLoadStoreLayout(numWarps, threadsPerWarp, resultType);
+        if (introducesCrossWarpReduction(op, layout))
+          layout = resultType.getEncoding();
+        layoutMap[op] = layout;
+      }
     }
     if (auto store = dyn_cast<DescriptorStoreLikeOpInterface>(op)) {
       layoutMap[op] = pickDescriptorLoadStoreLayout(numWarps, threadsPerWarp,
