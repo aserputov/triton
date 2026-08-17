@@ -13,7 +13,21 @@ reduction-lowering stack merged immediately after 3.6.0:
 | `post_9220` | `b5e3800aec` | Tree reductions for in-thread values |
 | `post_9221` | `bb75a87080` | Cross-CTA reduction support |
 
-The workflow has a hard cost boundary:
+The preferred workflow uses free GitHub-hosted Actions:
+
+1. Pushing this branch triggers
+   `.github/workflows/descriptor-reduction-recovery-wheels.yml`.  Four source
+   candidates build in parallel, while official 3.6.0 and 3.7.0 wheels are
+   downloaded from PyPI.
+2. The workflow publishes the six wheels as checksummed assets in the
+   `descriptor-reduction-recovery-v1` pre-release.
+3. On H100, run
+   `bootstrap_and_run_h100_descriptor_reduction_recovery.sh`.  It verifies all
+   release checksums before invoking the no-build benchmark runner.
+4. Stop the H100 as soon as the script prints `STOP THE H100 POD NOW`.
+
+The CPU Pod workflow remains available as a fallback and has the same hard
+cost boundary:
 
 1. Run `build_descriptor_reduction_recovery_wheels.sh` on a CPU-only pod with
    the persistent network volume mounted at `/workspace`.  It downloads the

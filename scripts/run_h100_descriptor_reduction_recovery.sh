@@ -6,9 +6,9 @@ set -euo pipefail
 
 PYTHON_BIN="${PYTHON_BIN:-/opt/venv/bin/python}"
 WORKSPACE="${WORKSPACE:-/workspace}"
-WHEEL_ROOT="${WORKSPACE}/triton-recovery-wheels"
-MANIFEST="${WHEEL_ROOT}/manifest.tsv"
-BENCH="${WORKSPACE}/triton-recovery-benchmark/bench_desc_load_reduce.py"
+WHEEL_ROOT="${WHEEL_ROOT:-${WORKSPACE}/triton-recovery-wheels}"
+MANIFEST="${MANIFEST:-${WHEEL_ROOT}/manifest.tsv}"
+BENCH="${BENCH:-${WORKSPACE}/triton-recovery-benchmark/bench_desc_load_reduce.py}"
 BENCH_SHA256="be0867a4937ecda465067c75a55b01c045afc1c23a0340428a383691f0fbe4e3"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 RESULTS_DIR="${WORKSPACE}/triton-recovery-results-${RUN_ID}"
